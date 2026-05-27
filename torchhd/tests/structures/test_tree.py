@@ -31,9 +31,9 @@ seed = 2147483644
 letters = list(string.ascii_lowercase)
 
 
-class TestTree:
+class TestBinaryTree:
     def test_creation_dim(self):
-        T = structures.Tree(10000)
+        T = structures.BinaryTree(10000)
         assert torch.allclose(T.value, torch.zeros(10000))
 
     def test_generator(self):
@@ -51,7 +51,7 @@ class TestTree:
         generator = torch.Generator()
         generator.manual_seed(seed)
         hv = functional.random(len(letters), 10000, generator=generator)
-        T = structures.Tree(10000)
+        T = structures.BinaryTree(10000)
         T.add_leaf(hv[0], ["l", "l"])
         assert (
             torch.argmax(
@@ -71,7 +71,7 @@ class TestTree:
         generator = torch.Generator()
         generator.manual_seed(seed)
         hv = functional.random(len(letters), 10000, generator=generator)
-        T = structures.Tree(10000)
+        T = structures.BinaryTree(10000)
         T.add_leaf(hv[0], ["l", "l"])
         assert (
             torch.argmax(
@@ -91,7 +91,7 @@ class TestTree:
         generator = torch.Generator()
         generator.manual_seed(seed)
         hv = functional.random(8, 10, generator=generator)
-        T = structures.Tree(10)
+        T = structures.BinaryTree(10)
 
         T.add_leaf(hv[0], ["l", "l"])
         T.add_leaf(hv[1], ["l", "r"])
@@ -99,4 +99,140 @@ class TestTree:
         T.clear()
         assert torch.allclose(
             T.value, torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        )
+
+
+class TestTree:
+    def test_creation_dim(self):
+        T = structures.Tree(10000)
+        assert torch.allclose(T.value, torch.zeros(10000))
+
+    def test_generator(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv1 = functional.random(60, 10000, generator=generator)
+
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv2 = functional.random(60, 10000, generator=generator)
+
+        assert (hv1 == hv2).min().item()
+
+    def test_add_child(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 10000, generator=generator)
+        T = structures.Tree(10000)
+        T.add_child(hv[0], hv[1])
+        assert (
+            torch.argmax(
+                functional.cosine_similarity(T.get_children(hv[0]), hv)
+            ).item()
+            == 1
+        )
+
+    def test_add_child_multiple(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 10000, generator=generator)
+        T = structures.Tree(10000)
+        T.add_child(hv[0], hv[1])
+        T.add_child(hv[0], hv[2])
+
+        children = T.get_children(hv[0])
+        similarity = functional.cosine_similarity(children, hv)
+        assert similarity[1] > 0.5
+        assert similarity[2] > 0.5
+        assert similarity[0] < 0.5
+
+    def test_get_children(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 10000, generator=generator)
+        T = structures.Tree(10000)
+        T.add_child(hv[0], hv[1])
+        T.add_child(hv[1], hv[2])
+
+        assert (
+            torch.argmax(
+                functional.cosine_similarity(T.get_children(hv[0]), hv)
+            ).item()
+            == 1
+        )
+        assert (
+            torch.argmax(
+                functional.cosine_similarity(T.get_children(hv[1]), hv)
+            ).item()
+            == 2
+        )
+
+    def test_get_parent(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 10000, generator=generator)
+        T = structures.Tree(10000)
+        T.add_child(hv[0], hv[1])
+        T.add_child(hv[0], hv[2])
+        T.add_child(hv[1], hv[3])
+
+        assert (
+            torch.argmax(
+                functional.cosine_similarity(T.get_parent(hv[1]), hv)
+            ).item()
+            == 0
+        )
+        assert (
+            torch.argmax(
+                functional.cosine_similarity(T.get_parent(hv[2]), hv)
+            ).item()
+            == 0
+        )
+        assert (
+            torch.argmax(
+                functional.cosine_similarity(T.get_parent(hv[3]), hv)
+            ).item()
+            == 1
+        )
+
+    def test_encode_child(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 10000, generator=generator)
+        T = structures.Tree(10000)
+
+        e = T.encode_child(hv[0], hv[1])
+        T.add_child(hv[0], hv[1])
+        assert T.contains(e) > torch.tensor(0.9)
+
+    def test_contains(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(4, 1000, generator=generator)
+        T = structures.Tree(1000)
+
+        e1 = T.encode_child(hv[0], hv[1])
+        e2 = T.encode_child(hv[0], hv[2])
+        e3 = T.encode_child(hv[2], hv[3])
+
+        T.add_child(hv[0], hv[1])
+        T.add_child(hv[0], hv[2])
+        T.add_child(hv[1], hv[2])
+
+        assert T.contains(e1) > torch.tensor(0.6)
+        assert T.contains(e2) > torch.tensor(0.6)
+        assert T.contains(e3) < torch.tensor(0.6)
+
+    def test_clear(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(4, 8, generator=generator)
+        T = structures.Tree(8)
+
+        T.add_child(hv[0], hv[1])
+        T.add_child(hv[0], hv[2])
+        T.add_child(hv[1], hv[2])
+
+        T.clear()
+        assert torch.allclose(
+            T.value, torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         )

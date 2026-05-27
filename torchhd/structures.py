@@ -36,7 +36,9 @@ __all__ = [
     "HashTable",
     "BundleSequence",
     "BindSequence",
+    "NGramSequence",
     "Graph",
+    "BinaryTree",
     "Tree",
     "FiniteStateAutomata",
 ]
@@ -825,6 +827,186 @@ class BindSequence:
         return cls(value, size=input.size(-2))
 
 
+class NGramSequence:
+    """Hypervector n-gram bundling sequence data structure.
+
+    Encodes a sequence as a bundle of all consecutive n-gram hypervectors.
+    Each window of n consecutive elements ``[v_i, ..., v_{i+n-1}]`` is
+    encoded as ``permute(v_i, n-1) * permute(v_{i+1}, n-2) * ... * v_{i+n-1}``
+    and all such windows are bundled together.
+
+    Elements can be added incrementally via :meth:`append`, which slides a
+    window of size ``n`` and bundles a new n-gram on every call once the
+    window is full.
+
+    Args:
+        dimensions (int): number of dimensions of the sequence.
+        n (int, optional): n-gram size. Default: ``3``.
+        vsa: (``VSAOptions``, optional): specifies the hypervector type and operations used (Default: ``"MAP"``).
+        dtype (``torch.dtype``, optional): the desired data type of returned tensor. Default: if ``None``, uses a global default (see ``torch.set_default_tensor_type()``).
+        device (``torch.device``, optional):  the desired device of returned tensor. Default: if ``None``, uses the current device for the default tensor type (see torch.set_default_tensor_type()). ``device`` will be the CPU for CPU tensor types and the current CUDA device for CUDA tensor types.
+
+    Args:
+        input (VSATensor): tensor representing a pre-computed n-gram bundle.
+        n (int, optional): n-gram size used to create the bundle. Default: ``3``.
+        size (int, optional): number of elements in the sequence. Default: ``0``.
+
+    Examples::
+
+        >>> S = structures.NGramSequence(10000, n=3)
+        >>> letters_hv = torchhd.random(26, 10000)
+        >>> S.append(letters_hv[0])
+        >>> S.append(letters_hv[1])
+        >>> S.append(letters_hv[2])
+
+    """
+
+    @overload
+    def __init__(
+        self,
+        dimensions: int,
+        n: int = 3,
+        vsa: VSAOptions = "MAP",
+        *,
+        device=None,
+        dtype=None,
+    ): ...
+
+    @overload
+    def __init__(self, input: VSATensor, n: int = 3, *, size=0): ...
+
+    def __init__(self, dim_or_input, n: int = 3, vsa: VSAOptions = "MAP", **kwargs):
+        self.n = n
+        self.size = kwargs.get("size", 0)
+        self._buffer: List[VSATensor] = []
+        if torch.is_tensor(dim_or_input):
+            self.value = dim_or_input
+        else:
+            dtype = kwargs.get("dtype", torch.get_default_dtype())
+            device = kwargs.get("device", None)
+            self.value = functional.empty(
+                1, dim_or_input, vsa, dtype=dtype, device=device
+            ).squeeze(0)
+
+    def _encode_window(self, window: List[VSATensor]) -> VSATensor:
+        result = functional.permute(window[0], shifts=self.n - 1)
+        for i in range(1, self.n):
+            result = functional.bind(result, functional.permute(window[i], shifts=self.n - i - 1))
+        return result
+
+    def encode_ngram(self, input: VSATensor) -> VSATensor:
+        """Returns the hypervector encoding of n consecutive elements.
+
+        The first element is permuted ``n-1`` times, each successive element
+        one fewer time, and the last element is left unchanged.
+
+        Args:
+            input (VSATensor): Tensor of shape ``(n, d)`` containing n hypervectors.
+
+        Examples::
+
+            >>> letters_hv = torchhd.random(26, 10000)
+            >>> S = structures.NGramSequence(10000, n=3)
+            >>> S.encode_ngram(letters_hv[:3])
+            tensor([-1.,  1., -1.,  ...,  1., -1., -1.])
+
+        """
+        return self._encode_window([input[i] for i in range(self.n)])
+
+    def append(self, input: VSATensor) -> None:
+        """Appends an element to the sequence.
+
+        Once the internal sliding window reaches n elements, the new n-gram is
+        bundled into :attr:`value` and the window slides forward by one.
+
+        Args:
+            input (VSATensor): Hypervector to append.
+
+        Examples::
+
+            >>> letters_hv = torchhd.random(26, 10000)
+            >>> S = structures.NGramSequence(10000, n=3)
+            >>> S.append(letters_hv[0])
+            >>> S.append(letters_hv[1])
+            >>> S.append(letters_hv[2])
+
+        """
+        window = self._buffer + [input]
+        if len(window) == self.n:
+            self.value = functional.bundle(self.value, self._encode_window(window))
+            self._buffer = window[1:]
+        else:
+            self._buffer = window
+        self.size += 1
+
+    def contains(self, input: VSATensor) -> Tensor:
+        """Returns the normalized dot similarity of the input against the sequence.
+
+        Args:
+            input (VSATensor): Hypervector to compare, typically the output of
+                :meth:`encode_ngram`.
+
+        Examples::
+
+            >>> letters_hv = torchhd.random(26, 10000)
+            >>> S = structures.NGramSequence.from_tensor(letters_hv[:5], n=3)
+            >>> e = S.encode_ngram(letters_hv[:3])
+            >>> S.contains(e)
+            tensor(1.)
+
+        """
+        return functional.dot_similarity(input, self.value) / self.value.size(-1)
+
+    def __len__(self) -> int:
+        """Returns the number of elements appended to the sequence.
+
+        Examples::
+
+            >>> len(S)
+            3
+
+        """
+        return self.size
+
+    def clear(self) -> None:
+        """Empties the sequence.
+
+        Examples::
+
+            >>> S.clear()
+
+        """
+        self.value.fill_(0.0)
+        self.size = 0
+        self._buffer = []
+
+    @classmethod
+    def from_tensor(cls, input: VSATensor, n: int = 3):
+        """Creates an NGramSequence from a tensor of hypervectors.
+
+        See: :func:`~torchhd.ngrams`.
+
+        The last ``n-1`` elements are stored in the internal buffer so that
+        subsequent calls to :meth:`append` continue the sequence correctly.
+
+        Args:
+            input (VSATensor): Tensor of shape ``(m, d)`` containing the sequence.
+            n (int, optional): n-gram size. Default: ``3``.
+
+        Examples::
+
+            >>> letters_hv = torchhd.random(26, 10000)
+            >>> S = structures.NGramSequence.from_tensor(letters_hv, n=3)
+
+        """
+        value = functional.ngrams(input, n)
+        instance = cls(value, n=n, size=input.size(-2))
+        m = input.size(-2)
+        for i in range(max(0, m - (n - 1)), m):
+            instance._buffer.append(input[i])
+        return instance
+
+
 class Graph:
     """Hypervector-based graph data structure.
 
@@ -977,10 +1159,10 @@ class Graph:
         return cls(value, directed=directed)
 
 
-class Tree:
-    """Hypervector-based tree data structure.
+class BinaryTree:
+    """Hypervector-based binary tree data structure.
 
-    Creates an empty tree.
+    Creates an empty binary tree.
 
     Args:
         dimensions (int): dimensions of the tree.
@@ -990,7 +1172,7 @@ class Tree:
 
     Examples::
 
-        >>> T = structures.Tree(10000)
+        >>> T = structures.BinaryTree(10000)
 
     """
 
@@ -1013,6 +1195,7 @@ class Tree:
 
             >>> letters = list(string.ascii_lowercase)
             >>> letters_hv = torchhd.random(len(letters), 10000)
+            >>> T = structures.BinaryTree(10000)
             >>> T.add_leaf(letters_hv[0], ['l','l'])
 
         """
@@ -1081,6 +1264,122 @@ class Tree:
                     )
 
         return functional.bind(self.value, hv_path.inverse())
+
+    def clear(self) -> None:
+        """Empties the tree.
+
+        Examples::
+
+            >>> T.clear()
+
+        """
+        self.value.fill_(0.0)
+
+
+class Tree:
+    """Hypervector-based tree data structure supporting arbitrary branching factor.
+
+    Encodes parent-child relationships as directed hypervector edges using
+    ``bind(parent, permute(child))``. Multiple children per parent are supported
+    by bundling their encodings together.
+
+    Args:
+        dimensions (int): number of dimensions.
+        vsa: (``VSAOptions``, optional): specifies the hypervector type and operations used (Default: ``"MAP"``).
+        dtype (``torch.dtype``, optional): the desired data type of returned tensor. Default: if ``None``, uses a global default (see ``torch.set_default_tensor_type()``).
+        device (``torch.device``, optional):  the desired device of returned tensor. Default: if ``None``, uses the current device for the default tensor type (see torch.set_default_tensor_type()). ``device`` will be the CPU for CPU tensor types and the current CUDA device for CUDA tensor types.
+
+    Examples::
+
+        >>> T = structures.Tree(10000)
+        >>> node_hv = torchhd.random(5, 10000)
+        >>> T.add_child(node_hv[0], node_hv[1])
+
+    """
+
+    def __init__(self, dimensions, vsa: VSAOptions = "MAP", device=None, dtype=None):
+        self.value = functional.empty(
+            1, dimensions, vsa, dtype=dtype, device=device
+        ).squeeze(0)
+
+    def add_child(self, parent: VSATensor, child: VSATensor) -> None:
+        """Adds a parent-child edge to the tree.
+
+        Args:
+            parent (VSATensor): Hypervector of the parent node.
+            child (VSATensor): Hypervector of the child node.
+
+        Examples::
+
+            >>> node_hv = torchhd.random(5, 10000)
+            >>> T.add_child(node_hv[0], node_hv[1])
+
+        """
+        self.value = functional.bundle(self.value, self.encode_child(parent, child))
+
+    def encode_child(self, parent: VSATensor, child: VSATensor) -> VSATensor:
+        """Returns the hypervector encoding of a parent-child relationship.
+
+        Args:
+            parent (VSATensor): Hypervector of the parent node.
+            child (VSATensor): Hypervector of the child node.
+
+        Examples::
+
+            >>> node_hv = torchhd.random(5, 10000)
+            >>> T.encode_child(node_hv[0], node_hv[1])
+            tensor([-1.,  1., -1.,  ...,  1., -1., -1.])
+
+        """
+        return functional.bind(parent, functional.permute(child))
+
+    def get_children(self, parent: VSATensor) -> VSATensor:
+        """Returns the bundled hypervector of all children of the given parent node.
+
+        Args:
+            parent (VSATensor): Hypervector of the parent node.
+
+        Examples::
+
+            >>> node_hv = torchhd.random(5, 10000)
+            >>> T.get_children(node_hv[0])
+            tensor([ 1.,  1.,  1.,  ..., -1., -1.,  1.])
+
+        """
+        permuted_children = functional.bind(self.value, parent.inverse())
+        return functional.permute(permuted_children, shifts=-1)
+
+    def get_parent(self, child: VSATensor) -> VSATensor:
+        """Returns the bundled hypervector of the parent of the given child node.
+
+        Args:
+            child (VSATensor): Hypervector of the child node.
+
+        Examples::
+
+            >>> node_hv = torchhd.random(5, 10000)
+            >>> T.get_parent(node_hv[1])
+            tensor([ 1.,  1., -1.,  ..., -1., -1.,  1.])
+
+        """
+        return functional.bind(self.value, functional.permute(child).inverse())
+
+    def contains(self, input: VSATensor) -> Tensor:
+        """Returns the normalized dot similarity of the input against the tree.
+
+        Args:
+            input (VSATensor): Hypervector to compare against the tree, typically
+                the output of :meth:`encode_child`.
+
+        Examples::
+
+            >>> node_hv = torchhd.random(5, 10000)
+            >>> e = T.encode_child(node_hv[0], node_hv[1])
+            >>> T.contains(e)
+            tensor(1.)
+
+        """
+        return functional.dot_similarity(input, self.value) / self.value.size(-1)
 
     def clear(self) -> None:
         """Empties the tree.
