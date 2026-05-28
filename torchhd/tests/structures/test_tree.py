@@ -222,6 +222,52 @@ class TestTree:
         assert T.contains(e2) > torch.tensor(0.6)
         assert T.contains(e3) < torch.tensor(0.6)
 
+    def test_contains_path_present(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 1000, generator=generator)
+        T = structures.Tree(1000)
+        T.add_child(hv[0], hv[1])
+        T.add_child(hv[1], hv[2])
+        T.add_child(hv[2], hv[3])
+
+        score = T.contains_path([hv[0], hv[1], hv[2], hv[3]])
+        assert score > torch.tensor(0.6)
+
+    def test_contains_path_absent(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 1000, generator=generator)
+        T = structures.Tree(1000)
+        T.add_child(hv[0], hv[1])
+        T.add_child(hv[1], hv[2])
+
+        # Path uses nodes not connected in the tree
+        score = T.contains_path([hv[3], hv[4], hv[5]])
+        assert score < torch.tensor(0.4)
+
+    def test_contains_path_partial(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 1000, generator=generator)
+        T = structures.Tree(1000)
+        T.add_child(hv[0], hv[1])
+        T.add_child(hv[1], hv[2])
+
+        present = T.contains_path([hv[0], hv[1], hv[2]])
+        absent = T.contains_path([hv[0], hv[3], hv[4]])
+        assert present > absent
+
+    def test_contains_path_two_nodes(self):
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        hv = functional.random(len(letters), 1000, generator=generator)
+        T = structures.Tree(1000)
+        T.add_child(hv[0], hv[1])
+
+        assert T.contains_path([hv[0], hv[1]]) > torch.tensor(0.6)
+        assert T.contains_path([hv[0], hv[2]]) < torch.tensor(0.4)
+
     def test_clear(self):
         generator = torch.Generator()
         generator.manual_seed(seed)

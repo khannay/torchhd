@@ -1381,6 +1381,33 @@ class Tree:
         """
         return functional.dot_similarity(input, self.value) / self.value.size(-1)
 
+    def contains_path(self, path: List[VSATensor]) -> Tensor:
+        """Returns the mean edge similarity of a node path against the tree.
+
+        For a path ``[v0, v1, ..., vk]`` checks each consecutive parent-child
+        edge and returns the mean similarity. A score near 1 indicates every
+        edge in the path is stored in the tree; lower scores indicate missing
+        or incorrect edges.
+
+        Args:
+            path (List[VSATensor]): Ordered list of at least 2 node hypervectors
+                representing a root-to-leaf (or sub-path) traversal.
+
+        Examples::
+
+            >>> node_hv = torchhd.random(5, 10000)
+            >>> T.add_child(node_hv[0], node_hv[1])
+            >>> T.add_child(node_hv[1], node_hv[2])
+            >>> T.contains_path([node_hv[0], node_hv[1], node_hv[2]])
+            tensor(1.)
+
+        """
+        n_edges = len(path) - 1
+        result = self.contains(self.encode_child(path[0], path[1]))
+        for i in range(1, n_edges):
+            result = result + self.contains(self.encode_child(path[i], path[i + 1]))
+        return result / n_edges
+
     def clear(self) -> None:
         """Empties the tree.
 
